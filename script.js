@@ -27,14 +27,27 @@ const LANDMARK = {
   RIGHT_KNEE: 26,
 };
 
-// 足踏み判定の閾値(ヒステリシス方式でチラつきを防ぐ)
-// legLift = 股関節のY座標 - 膝のY座標
-// 値が大きい(上がる)ほど「膝が上がっている」状態を意味する
-const LIFT_ON_THRESHOLD = -0.12;   // これを超えたら「脚が上がった」と判定
-const LIFT_OFF_THRESHOLD = -0.18;  // これを下回ったら「脚が下りた」と判定(1歩完了)
+// --- 足踏み判定の閾値 ---
+// 以前は固定の絶対値(例: -0.12)で判定していたが、カメラとの距離や
+// 立ち位置によって「脚が上がったときのY座標の変化量」が大きく変わるため、
+// 絶対値方式だと「反応しない/しすぎる」が起きやすかった。
+// そこで、各利用者の「立っている(脚が下りている)ときの状態」を自動的に
+// 学習(baseline)し、そこからの相対的な変化量で判定する方式に変更している。
+
+// baseline(安静時の値)を推定するための、非常にゆっくりとした移動平均の係数
+// 値が小さいほど、baselineはゆっくり動く(=一瞬の膝上げに引っ張られにくい)
+const LEG_BASELINE_SMOOTHING = 0.02;
+
+// baselineからこれだけ上がったら「脚が上がった」と判定する(通常の膝上げで十分届く値)
+const LEG_LIFT_ON_MARGIN = 0.035;
+// baselineからこれだけ戻ったら「脚が下りた」と判定する(=1歩完了)。
+// ON_MARGINより小さい値にすることで、ヒステリシス(チラつき防止の遊び)を作っている
+const LEG_LIFT_OFF_MARGIN = 0.015;
 
 // ランドマークの信頼度がこれ未満の場合は判定に使わない(誤検出防止)
-const VISIBILITY_THRESHOLD = 0.5;
+// 股関節(上半身に近い)はやや厳しめ、膝(下半身・映りにくい)はやや緩めにしている
+const HIP_VISIBILITY_THRESHOLD = 0.5;
+const LEG_VISIBILITY_THRESHOLD = 0.3;
 
 // 1歩ごとに加算するスクロール速度(px/秒)
 const SPEED_BOOST = 260;
@@ -104,6 +117,7 @@ const debugCtx = debugCanvas.getContext("2d");
 const gameCanvas = document.getElementById("gameCanvas");
 const gameCtx = gameCanvas.getContext("2d");
 const statusText = document.getElementById("statusText");
+const debugInfo = document.getElementById("debugInfo");
 
 
 /* ------------------------------------------------------------
@@ -112,6 +126,13 @@ const statusText = document.getElementById("statusText");
 
 // 現在、脚が「上がっている」か「下りている」か(ヒステリシス判定用)
 let legState = "down";
+
+// 「安静時(脚が下りている状態)」のlegLiftを自動学習した値。まだ計算していない場合はnull
+let legBaseline = null;
+
+// 最新のlegLift値と可視性(デバッグ表示・チューニング用に保持)
+let debugLegLift = 0;
+let debugLegVisible = false;
 
 // 検出できた歩数(足踏み回数)
 let stepCount = 0;
@@ -230,6 +251,22 @@ function onPoseResults(results) {
 
   // --- 状態表示テキストの更新 ---
   updateStatusText();
+  updateDebugInfo();
+}
+
+function updateDebugInfo() {
+  if (!isPersonDetected) {
+    debugInfo.textContent = "脚の判定: 検出なし";
+    return;
+  }
+  if (!debugLegVisible) {
+    debugInfo.textContent = "脚の判定: 脚が見えていません(信頼度不足)";
+    return;
+  }
+  const baselineText = legBaseline === null ? "-" : legBaseline.toFixed(3);
+  debugInfo.textContent =
+    `脚の判定: 現在値 ${debugLegLift.toFixed(3)} / 基準値 ${baselineText} / ` +
+    `歩数 ${stepCount}`;
 }
 
 function updateStatusText() {
@@ -258,8 +295,13 @@ function updateStatusText() {
      ・値が大きいほど「膝が持ち上がっている」ことを意味する
      ・左右のうち、より高く上がっている方の値を採用する
        (片足ずつ交互に上がる、足踏み・歩行の動きを捉えるため)
+     ・maxLegLiftを非常にゆっくり平均した値を「baseline(安静時の値)」として
+       常に更新し続ける。脚が上がっている時間は短いため、この平均値は
+       自然と「立っているときの値」に近づいていく
+     ・baselineからの相対的な変化量で「上がった/下りた」を判定するため、
+       カメラとの距離や体格差があっても、時間とともに自動的に合っていく
      ・「上がった→下りた」の1サイクルを検出したら1歩とカウントする
-     ・ON/OFFで別々の閾値を使う(ヒステリシス)ことで、
+     ・ON/OFFで別々のマージンを使う(ヒステリシス)ことで、
        境界付近での小さなブレによる誤検出を防いでいる
    ------------------------------------------------------------ */
 
@@ -269,12 +311,14 @@ function detectStepping(landmarks) {
   const leftKnee = landmarks[LANDMARK.LEFT_KNEE];
   const rightKnee = landmarks[LANDMARK.RIGHT_KNEE];
 
-  // 必要な部位の信頼度が低い場合は判定をスキップ(下半身が映っていない等)
+  // 股関節と膝で、必要な信頼度のレベルを分けている(膝は映りにくく低くなりがちなため)
   const allVisible =
-    leftHip.visibility > VISIBILITY_THRESHOLD &&
-    rightHip.visibility > VISIBILITY_THRESHOLD &&
-    leftKnee.visibility > VISIBILITY_THRESHOLD &&
-    rightKnee.visibility > VISIBILITY_THRESHOLD;
+    leftHip.visibility > HIP_VISIBILITY_THRESHOLD &&
+    rightHip.visibility > HIP_VISIBILITY_THRESHOLD &&
+    leftKnee.visibility > LEG_VISIBILITY_THRESHOLD &&
+    rightKnee.visibility > LEG_VISIBILITY_THRESHOLD;
+
+  debugLegVisible = allVisible;
 
   if (!allVisible) {
     return; // 下半身が見えていないので判定しない(誤検出防止)
@@ -286,11 +330,23 @@ function detectStepping(landmarks) {
 
   // 左右どちらか、より高く上がっている方を採用
   const maxLegLift = Math.max(leftLegLift, rightLegLift);
+  debugLegLift = maxLegLift;
 
-  if (legState === "down" && maxLegLift > LIFT_ON_THRESHOLD) {
+  // baselineの更新(常にゆっくり追従させる。急に上がった瞬間も少し混ざるが、
+  // 係数が小さいため影響はごくわずかで、すぐに実際の安静値へ戻る)
+  if (legBaseline === null) {
+    legBaseline = maxLegLift; // 初回はそのまま採用してスタート地点にする
+  } else {
+    legBaseline += (maxLegLift - legBaseline) * LEG_BASELINE_SMOOTHING;
+  }
+
+  const onThreshold = legBaseline + LEG_LIFT_ON_MARGIN;
+  const offThreshold = legBaseline + LEG_LIFT_OFF_MARGIN;
+
+  if (legState === "down" && maxLegLift > onThreshold) {
     // 脚が持ち上がった(まだカウントはしない。下りたときに1歩とする)
     legState = "up";
-  } else if (legState === "up" && maxLegLift < LIFT_OFF_THRESHOLD) {
+  } else if (legState === "up" && maxLegLift < offThreshold) {
     // 脚が下りた → 1歩分の動きが完了したとみなす
     legState = "down";
     onStepDetected();
@@ -326,7 +382,7 @@ function updateLanePosition(landmarks) {
   const rightHip = landmarks[LANDMARK.RIGHT_HIP];
 
   // 股関節の信頼度が低い場合は判定しない(誤検出防止)
-  if (leftHip.visibility < VISIBILITY_THRESHOLD || rightHip.visibility < VISIBILITY_THRESHOLD) {
+  if (leftHip.visibility < HIP_VISIBILITY_THRESHOLD || rightHip.visibility < HIP_VISIBILITY_THRESHOLD) {
     return;
   }
 

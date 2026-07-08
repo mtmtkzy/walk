@@ -94,3 +94,14 @@ body {
   width: 200px;
   height: auto;
 }
+
+/* 歩行判定チューニング用の数値表示(開発・調整時のみ参照する想定) */
+.debug-info {
+  margin: 4px 0 0;
+  padding: 4px 8px;
+  background: rgba(255, 255, 255, 0.85);
+  font-size: 0.75rem;
+  font-family: monospace;
+  color: #2f3e46;
+  text-align: center;
+}
