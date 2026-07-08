@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>うごいて冒険 - Phase1 プロトタイプ</title>
+
+<!-- ==========================================================
+     MediaPipe Pose 関連のライブラリをCDNから読み込む
+     ・pose.js         : 人体の骨格(ランドマーク)検出エンジン本体
+     ・camera_utils.js : Webカメラ映像をPoseに渡すためのユーティリティ
+     ・drawing_utils.js: 検出した骨格を画面に描画するためのユーティリティ
+     ========================================================== -->
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/pose/pose.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+<script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ==========================================================
+       画面全体のタイトル
+       児童向けなので短く・大きく・ひらがな中心にしている
+       ========================================================== -->
+  <header class="app-header">
+    <h1>うごいて ぼうけん</h1>
+  </header>
+
+  <main class="stage">
+
+    <!-- ======================================================
+         ゲーム本体のキャンバス
+         背景のスクロール・キャラクター・距離表示をここに描画する
+         ====================================================== -->
+    <canvas id="gameCanvas" width="960" height="540"></canvas>
+
+    <!-- ======================================================
+         状態表示エリア(教員・開発者向けデバッグ情報も兼ねる)
+         「動いている / 動いていない」「認識できているか」を表示
+         ====================================================== -->
+    <div id="statusPanel" class="status-panel">
+      <p id="statusText">カメラを準備しています…</p>
+    </div>
+
+    <!-- ======================================================
+         カメラ映像 + 骨格デバッグ表示(画面右下に小さく表示)
+         本番では非表示にできるよう、CSSでサイズ調整しやすくしてある
+         ====================================================== -->
+    <div class="camera-preview">
+      <!-- 実際のカメラ映像。MediaPipeへの入力用なので画面には映さない(裏で使うだけ) -->
+      <video id="inputVideo" playsinline style="display:none;"></video>
+      <!-- カメラ映像 + 検出した骨格線を重ねて描画するデバッグ用キャンバス -->
+      <canvas id="debugCanvas" width="320" height="240"></canvas>
+    </div>
+
+  </main>
+
+  <!-- 自作JavaScript(script.js)を最後に読み込む -->
+  <script src="script.js"></script>
+</body>
+</html>
